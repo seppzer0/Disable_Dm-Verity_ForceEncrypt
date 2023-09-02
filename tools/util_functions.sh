@@ -15,34 +15,24 @@ is_mounted() {
 # Installation Related
 #######################
 
-# find_block [partname...]
 find_block() {
-  local BLOCK DEV DEVICE DEVNAME PARTNAME UEVENT
   for BLOCK in "$@"; do
-    DEVICE=`find /dev/block \( -type b -o -type c -o -type l \) -iname $BLOCK | head -n 1` 2>/dev/null
+    DEVICE=`find /dev/block -type l -iname $BLOCK | head -n 1` 2>/dev/null
     if [ ! -z $DEVICE ]; then
       readlink -f $DEVICE
       return 0
     fi
   done
   # Fallback by parsing sysfs uevents
-  for UEVENT in /sys/dev/block/*/uevent; do
-    DEVNAME=`grep_prop DEVNAME $UEVENT`
-    PARTNAME=`grep_prop PARTNAME $UEVENT`
+  for uevent in /sys/dev/block/*/uevent; do
+    local DEVNAME=`file_getprop $uevent DEVNAME`
+    local PARTNAME=`file_getprop $uevent PARTNAME`
     for BLOCK in "$@"; do
-      if [ "$(toupper $BLOCK)" = "$(toupper $PARTNAME)" ]; then
+      if [ "`toupper $BLOCK`" = "`toupper $PARTNAME`" ]; then
         echo /dev/block/$DEVNAME
         return 0
       fi
     done
-  done
-  # Look just in /dev in case we're dealing with MTD/NAND without /dev/block devices/links
-  for DEV in "$@"; do
-    DEVICE=`find /dev \( -type b -o -type c -o -type l \) -maxdepth 1 -iname $DEV | head -n 1` 2>/dev/null
-    if [ ! -z $DEVICE ]; then
-      readlink -f $DEVICE
-      return 0
-    fi
   done
   return 1
 }
@@ -111,22 +101,40 @@ get_flags() {
   export KEEPQUOTA
 }
 
+patch_dtb_partitions() {
+  local result=1
+  for name in dtb dtbo; do
+    local IMAGE=`find_block $name$slot`
+    if [ ! -z $IMAGE ]; then
+      ui_print "- $name image: $IMAGE"
+      if $bin/magiskboot dtb $IMAGE patch dt.patched; then
+        result=0
+        ui_print "- Flashing patched $name"
+        cat dt.patched /dev/zero > $IMAGE
+        rm -f dt.patched
+      fi
+    fi
+  done
+  return $result
+}
+
 chooseport() {
   # Keycheck binary by someone755 @Github, idea for code below by Zappo @xda-developers
   # Calling it first time detects previous input. Calling it second time will do what we want
-  local error=false
   while true; do
-    timeout 0 $bin/keycheck
-    timeout 3 $bin/keycheck
+    $bin/keycheck
+    $bin/keycheck
     local SEL=$?
-    if [ $SEL -eq 42 ]; then
+    if [ "$1" == "UP" ]; then
+      UP=$SEL
+      break
+    elif [ "$1" == "DOWN" ]; then
+      DOWN=$SEL
+      break
+    elif [ $SEL -eq $UP ]; then
       return 0
-    elif [ $SEL -eq 41 ]; then
+    elif [ $SEL -eq $DOWN ]; then
       return 1
-    else
-      $error && abort "Volume key error!"
-      error=true
-      echo "Volume key not detected. Try again"
     fi
   done
 }
@@ -134,6 +142,12 @@ chooseport() {
 get_key_opts() {
   ui_print "  Sideload detected! Zipname options can't be read"
   ui_print "  Using Vol Key selection method"
+  ui_print " "
+  ui_print "- Vol Key Programming -"
+  ui_print "  Press Vol Up"
+  chooseport "UP"
+  ui_print "  Press Vol Down"
+  chooseport "DOWN"
   ui_print " "
   ui_print "- Select Options -"
   ui_print "  Vol+ = yes, Vol- = no"
